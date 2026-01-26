@@ -4,6 +4,7 @@ import subprocess
 import json
 import re
 import time
+import shutil
 from pathlib import Path
 
 def clear_screen():
@@ -13,7 +14,7 @@ def clear_screen():
 def print_header():
     """Print application header"""
     print("=" * 70)
-    print("          YOUTUBE VIDEO DOWNLOADER (Advanced)")
+    print("          YOUTUBE VIDEO DOWNLOADER (No FFmpeg Required)")
     print("=" * 70)
     print()
 
@@ -205,26 +206,27 @@ def format_views(views):
         return f"{views:,}"
 
 def get_format_options():
-    """Let user choose format/quality"""
-    print("\n📊 Download Format Options:")
-    print("   1. Best quality (video + audio)")
-    print("   2. 1080p HD")
-    print("   3. 720p HD")
-    print("   4. 480p")
-    print("   5. 360p")
-    print("   6. Audio only (MP3 - 320kbps)")
-    print("   7. Audio only (best quality)")
+    """Let user choose format/quality - ALL PROGRESSIVE (no FFmpeg needed)"""
+    print("\n📊 Download Format Options (No FFmpeg Required):")
+    print("   1. Best available progressive stream (video+audio combined)")
+    print("   2. 1080p progressive (if available)")
+    print("   3. 720p HD progressive")
+    print("   4. 480p progressive")
+    print("   5. 360p progressive")
+    print("   6. Audio only - MP3 (requires FFmpeg)")
+    print("   7. Audio only - best quality (requires FFmpeg)")
     print("   8. Subtitles only")
     
     while True:
         choice = input("\nSelect format (1-8): ").strip()
         
+        # Progressive streams only - already combined video+audio
         format_map = {
-            '1': 'best',
-            '2': 'bestvideo[height<=1080]+bestaudio/best[height<=1080]',
-            '3': 'bestvideo[height<=720]+bestaudio/best[height<=720]',
-            '4': 'bestvideo[height<=480]+bestaudio/best[height<=480]',
-            '5': 'bestvideo[height<=360]+bestaudio/best[height<=360]',
+            '1': 'best',  # This automatically picks progressive streams
+            '2': 'best[height<=1080][ext=mp4]',  # MP4 progressive streams up to 1080p
+            '3': 'best[height<=720][ext=mp4]',   # MP4 progressive streams up to 720p
+            '4': 'best[height<=480][ext=mp4]',   # MP4 progressive streams up to 480p
+            '5': 'best[height<=360][ext=mp4]',   # MP4 progressive streams up to 360p
             '6': 'bestaudio[ext=m4a]/bestaudio --extract-audio --audio-format mp3 --audio-quality 320K',
             '7': 'bestaudio',
             '8': '--write-subs --skip-download'
@@ -240,20 +242,18 @@ def get_download_strategy():
     print("\n🛡️  Download Strategy (to avoid blocking):")
     print("   1. Standard (recommended)")
     print("   2. Aggressive (use if Standard fails)")
-    print("   3. Use cookies (if you have YouTube cookies file)")
-    print("   4. Slow mode (for problematic videos)")
     
     while True:
-        choice = input("\nSelect strategy (1-4): ").strip()
+        choice = input("\nSelect strategy (1-2): ").strip()
         
-        if choice in ['1', '2', '3', '4']:
+        if choice in ['1', '2']:
             return int(choice)
         else:
-            print("❌ Invalid choice. Please select 1-4.")
+            print("❌ Invalid choice. Please select 1-2.")
 
 def download_video(url, download_path, format_choice, strategy_choice, format_num):
-    """Download video using yt-dlp with robust error handling"""
-    print(f"\n⬇️  Starting download...")
+    """Download video using yt-dlp with robust error handling - NO FFMPEG REQUIRED"""
+    print(f"\n⬇️  Starting download (No FFmpeg required)...")
     print(f"   Destination: {download_path}")
     print("-" * 70)
     
@@ -261,19 +261,33 @@ def download_video(url, download_path, format_choice, strategy_choice, format_nu
         # Base command
         cmd = ['yt-dlp']
         
-        # Output template
-        output_template = f'{download_path}/%(title)s [%(id)s].%(ext)s'
+        # Output template - cleaner
+        output_template = f'{download_path}/%(title)s.%(ext)s'
         cmd.extend(['-o', output_template])
         
-        # Add format options
-        if format_num == 6:  # MP3 conversion
-            # Split the format string for MP3
-            format_parts = format_choice.split()
-            cmd.extend(format_parts)
+        # For progressive formats (1-5), use simpler approach
+        if format_num <= 5:  # Progressive video formats
+            # Force progressive streams (already merged)
+            cmd.extend(['-f', format_choice])
+            # Add format preference to ensure progressive
+            cmd.extend(['--format-sort', 'proto,res,codec,size,br'])
+            cmd.extend(['--prefer-free-formats'])
+            
+            # Clean up temp files
+            cmd.extend(['--no-keep-video'])
+            
+        elif format_num == 6:  # MP3 conversion (requires FFmpeg warning)
+            print("⚠️  MP3 conversion requires FFmpeg. Install FFmpeg for this feature.")
+            print("   Using M4A instead (no FFmpeg needed)...")
+            cmd.extend(['-f', 'bestaudio[ext=m4a]/bestaudio'])
+            
+        elif format_num == 7:  # Audio only (requires FFmpeg warning)
+            print("⚠️  Audio extraction requires FFmpeg. Install FFmpeg for this feature.")
+            print("   Using M4A instead (no FFmpeg needed)...")
+            cmd.extend(['-f', 'bestaudio[ext=m4a]/bestaudio'])
+            
         elif format_num == 8:  # Subtitles only
             cmd.extend(['--write-subs', '--skip-download'])
-        else:
-            cmd.extend(['-f', format_choice])
         
         # Add strategy-specific options
         if strategy_choice == 1:  # Standard
@@ -281,46 +295,34 @@ def download_video(url, download_path, format_choice, strategy_choice, format_nu
                 '--retries', '10',
                 '--fragment-retries', '10',
                 '--skip-unavailable-fragments',
-                '--no-part',
                 '--throttled-rate', '100K',
+                '--socket-timeout', '30',
+                '--source-address', '0.0.0.0',
                 '--force-ipv4',
                 '--no-check-certificate',
-                '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                '--geo-bypass',
+                '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                '--referer', 'https://www.youtube.com/',
+                '--add-header', 'Accept-Language:en-US,en;q=0.9',
             ])
         elif strategy_choice == 2:  # Aggressive
             cmd.extend([
                 '--retries', '20',
                 '--fragment-retries', '20',
                 '--skip-unavailable-fragments',
-                '--no-part',
+                '--throttled-rate', '50K',
+                '--socket-timeout', '60',
+                '--source-address', '0.0.0.0',
                 '--force-ipv4',
                 '--no-check-certificate',
-                '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                '--geo-bypass',
+                '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 '--referer', 'https://www.youtube.com/',
-                '--add-header', 'Accept-Language:en-US,en;q=0.9',
+                '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                '--add-header', 'Accept-Language:en-US,en;q=0.5',
+                '--add-header', 'Connection:keep-alive',
                 '--sleep-interval', '2',
                 '--max-sleep-interval', '5'
-            ])
-        elif strategy_choice == 3:  # With cookies
-            cookies_path = input("Enter path to cookies.txt file: ").strip()
-            if os.path.exists(cookies_path):
-                cmd.extend(['--cookies', cookies_path])
-            else:
-                print("❌ Cookies file not found. Switching to Aggressive mode.")
-                strategy_choice = 2
-                return download_video(url, download_path, format_choice, 2, format_num)
-        elif strategy_choice == 4:  # Slow mode
-            cmd.extend([
-                '--retries', '30',
-                '--fragment-retries', '30',
-                '--skip-unavailable-fragments',
-                '--no-part',
-                '--limit-rate', '500K',
-                '--sleep-interval', '5',
-                '--max-sleep-interval', '10',
-                '--force-ipv4',
-                '--no-check-certificate',
-                '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             ])
         
         # Add progress and newline for better display
@@ -329,7 +331,7 @@ def download_video(url, download_path, format_choice, strategy_choice, format_nu
         # Add URL
         cmd.append(url)
         
-        print(f"\nCommand: {' '.join(cmd[:10])}...")
+        print(f"\nStarting download...")
         print("-" * 70)
         
         # Run download process
@@ -364,6 +366,8 @@ def download_video(url, download_path, format_choice, strategy_choice, format_nu
                         bar = '█' * filled + '░' * (bar_length - filled)
                         print(f'\r   Progress: [{bar}] {percentage:.1f}%', end='', flush=True)
                         last_percentage = percentage
+            elif 'ERROR' in line or 'WARNING' in line:
+                print(f'\n   ⚠️ {line}')
             elif line and not line.startswith('[debug]'):
                 if download_started:
                     print(f'\n   {line}')
@@ -378,8 +382,7 @@ def download_video(url, download_path, format_choice, strategy_choice, format_nu
             print("✅ Download completed successfully!")
             return True, "Success"
         else:
-            error_msg = "Download failed with unknown error"
-            print(f"❌ {error_msg}")
+            error_msg = f"Download failed with exit code: {process.returncode}"
             return False, error_msg
             
     except FileNotFoundError:
@@ -391,34 +394,27 @@ def download_video(url, download_path, format_choice, strategy_choice, format_nu
         print(f"❌ {error_msg}")
         return False, error_msg
 
-def alternative_download_method(url, download_path):
-    """Try alternative download method if main one fails"""
-    print("\n🔄 Trying alternative download method...")
+def download_playlist_without_ffmpeg(url, download_path):
+    """Special function for downloading playlists without FFmpeg"""
+    print("\n🎵 Downloading playlist (progressive streams only)...")
     
     try:
-        # Try with different options
         cmd = [
             'yt-dlp',
-            '-o', f'{download_path}/%(title)s.%(ext)s',
-            '-f', 'best[height<=720]',
-            '--retries', '30',
-            '--fragment-retries', '30',
+            '-o', f'{download_path}/%(playlist)s/%(playlist_index)s - %(title)s.%(ext)s',
+            '-f', 'best[height<=720][ext=mp4]/best[ext=mp4]/best',
+            '--retries', '10',
+            '--fragment-retries', '10',
             '--skip-unavailable-fragments',
-            '--throttled-rate', '50K',
-            '--sleep-interval', '3',
-            '--max-sleep-interval', '8',
-            '--force-ipv4',
-            '--no-check-certificate',
-            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            '--referer', 'https://www.youtube.com/',
-            '--add-header', 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            '--add-header', 'Accept-Language: en-US,en;q=0.5',
-            '--add-header', 'Accept-Encoding: gzip, deflate',
-            '--add-header', 'DNT: 1',
-            '--add-header', 'Connection: keep-alive',
-            '--add-header', 'Upgrade-Insecure-Requests: 1',
+            '--no-playlist-reverse',
+            '--no-playlist-random',
+            '--download-archive', os.path.join(download_path, 'downloaded.txt'),
             '--newline',
             '--progress',
+            '--console-title',
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            '--force-ipv4',
+            '--no-check-certificate',
             url
         ]
         
@@ -427,12 +423,14 @@ def alternative_download_method(url, download_path):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             universal_newlines=True,
-            bufsize=1
+            bufsize=1,
+            encoding='utf-8',
+            errors='ignore'
         )
         
         for line in process.stdout:
             line = line.strip()
-            if line:
+            if '[download]' in line or '[info]' in line:
                 print(f'   {line}')
         
         process.wait()
@@ -440,7 +438,7 @@ def alternative_download_method(url, download_path):
         return process.returncode == 0
         
     except Exception as e:
-        print(f"❌ Alternative method also failed: {e}")
+        print(f"❌ Playlist download failed: {e}")
         return False
 
 def main():
@@ -457,9 +455,45 @@ def main():
         # Get URL
         url = get_valid_url()
         
+        # Check if it's a playlist
+        is_playlist = 'list=' in url or 'playlist' in url
+        
         # Get download path
         download_path = get_download_path()
         
+        # For playlists, use special function
+        if is_playlist:
+            print("\n🎵 Playlist detected!")
+            choice = input("Download entire playlist? (y/n): ").lower()
+            if choice == 'y':
+                success = download_playlist_without_ffmpeg(url, download_path)
+                if success:
+                    print("\n✅ Playlist download completed!")
+                else:
+                    print("\n❌ Playlist download failed.")
+                
+                # Open folder option
+                open_folder = input("\n📂 Open download folder? (y/n): ").lower()
+                if open_folder == 'y':
+                    if os.name == 'nt':  # Windows
+                        os.startfile(download_path)
+                    elif os.name == 'posix':  # macOS or Linux
+                        if sys.platform == 'darwin':  # macOS
+                            os.system(f'open "{download_path}"')
+                        else:  # Linux
+                            os.system(f'xdg-open "{download_path}"')
+                
+                # Ask to download another
+                print("\n" + "=" * 70)
+                another = input("📥 Download another video/playlist? (y/n): ").lower()
+                if another == 'y':
+                    main()
+                else:
+                    print("\n👋 Thank you for using YouTube Downloader!")
+                    print("=" * 70)
+                return
+        
+        # For single videos
         # Get video info
         print("\n🔍 Analyzing URL...")
         video_info = get_video_info(url)
@@ -482,9 +516,20 @@ def main():
         print("DOWNLOAD CONFIGURATION:")
         print(f"   URL: {url[:50]}..." if len(url) > 50 else f"   URL: {url}")
         if video_info.get("title") != "Unknown":
-            print(f"   Title: {video_info.get('title', 'Unknown')[:60]}..." if len(video_info.get('title', '')) > 60 else f"   Title: {video_info.get('title', 'Unknown')}")
-        print(f"   Format: {'MP3 Audio' if format_num == 6 else 'Subtitles' if format_num == 8 else 'Video'}")
-        print(f"   Strategy: {'Standard' if strategy_choice == 1 else 'Aggressive' if strategy_choice == 2 else 'With Cookies' if strategy_choice == 3 else 'Slow Mode'}")
+            title = video_info.get('title', 'Unknown')
+            print(f"   Title: {title[:60]}..." if len(title) > 60 else f"   Title: {title}")
+        format_names = {
+            1: 'Best progressive',
+            2: '1080p progressive',
+            3: '720p progressive',
+            4: '480p progressive',
+            5: '360p progressive',
+            6: 'MP3 Audio (M4A fallback)',
+            7: 'Best Audio (M4A fallback)',
+            8: 'Subtitles only'
+        }
+        print(f"   Format: {format_names.get(format_num, 'Video')}")
+        print(f"   Strategy: {'Standard' if strategy_choice == 1 else 'Aggressive'}")
         print(f"   Save to: {download_path}")
         print("=" * 70)
         
@@ -495,12 +540,6 @@ def main():
         
         # Start download
         success, message = download_video(url, download_path, format_choice, strategy_choice, format_num)
-        
-        if not success:
-            print("\n⚠️  Primary download method failed.")
-            retry = input("Try with alternative method? (y/n): ").lower()
-            if retry == 'y':
-                success = alternative_download_method(url, download_path)
         
         if success:
             print("\n🎉 Download completed successfully!")
@@ -514,8 +553,9 @@ def main():
                     print("\n📄 Recently downloaded files:")
                     for file in recent_files[:3]:
                         file_path = os.path.join(download_path, file)
-                        size = os.path.getsize(file_path) / (1024*1024)
-                        print(f"   • {file[:50]}... ({size:.2f} MB)" if len(file) > 50 else f"   • {file} ({size:.2f} MB)")
+                        if os.path.exists(file_path):
+                            size = os.path.getsize(file_path) / (1024*1024)
+                            print(f"   • {file[:50]}... ({size:.2f} MB)" if len(file) > 50 else f"   • {file} ({size:.2f} MB)")
             except:
                 pass
             
@@ -529,13 +569,17 @@ def main():
                         os.system(f'open "{download_path}"')
                     else:  # Linux
                         os.system(f'xdg-open "{download_path}"')
+        else:
+            print(f"\n❌ Download failed: {message}")
+            print("   You can try:")
+            print("   1. Use a different quality setting")
+            print("   2. Try the aggressive strategy")
+            print("   3. Check your internet connection")
         
     except KeyboardInterrupt:
         print("\n\n⚠️  Download interrupted by user.")
     except Exception as e:
         print(f"\n❌ Unexpected error: {e}")
-        import traceback
-        traceback.print_exc()
 
     # Ask to download another
     print("\n" + "=" * 70)
@@ -543,7 +587,7 @@ def main():
     if another == 'y':
         main()
     else:
-        print("\n👋 Thank yaou for using YouTube Downloader!")
+        print("\n👋 Thank you for using YouTube Downloader!")
         print("=" * 70)
 
 if __name__ == "__main__":
