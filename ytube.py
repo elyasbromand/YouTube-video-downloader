@@ -584,52 +584,52 @@ def download_video(url, download_path, format_choice, strategy_choice, format_nu
         return False, msg
 
 
-# def download_playlist_without_ffmpeg(url, download_path):
-#     """Special function for downloading playlists without FFmpeg"""
-#     print("\n🎵 Downloading playlist (progressive streams only)...")
+def download_playlist_without_ffmpeg(url, download_path):
+    """Special function for downloading playlists without FFmpeg"""
+    print("\n🎵 Downloading playlist (progressive streams only)...")
     
-#     try:
-#         cmd = [
-#             'yt-dlp',
-#             '-o', f'{download_path}/%(playlist)s/%(playlist_index)s - %(title)s.%(ext)s',
-#             '-f', 'best[height<=720][ext=mp4]/best[ext=mp4]/best',
-#             '--retries', '10',
-#             '--fragment-retries', '10',
-#             '--skip-unavailable-fragments',
-#             '--no-playlist-reverse',
-#             '--no-playlist-random',
-#             '--download-archive', os.path.join(download_path, 'downloaded.txt'),
-#             '--newline',
-#             '--progress',
-#             '--console-title',
-#             '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-#             '--force-ipv4',
-#             '--no-check-certificate',
-#             url
-#         ]
+    try:
+        cmd = [
+            'yt-dlp',
+            '-o', f'{download_path}/%(playlist)s/%(playlist_index)s - %(title)s.%(ext)s',
+            '-f', 'best[height<=720][ext=mp4]/best[ext=mp4]/best',
+            '--retries', '10',
+            '--fragment-retries', '10',
+            '--skip-unavailable-fragments',
+            '--no-playlist-reverse',
+            '--no-playlist-random',
+            '--download-archive', os.path.join(download_path, 'downloaded.txt'),
+            '--newline',
+            '--progress',
+            '--console-title',
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            '--force-ipv4',
+            '--no-check-certificate',
+            url
+        ]
         
-#         process = subprocess.Popen(
-#             cmd,
-#             stdout=subprocess.PIPE,
-#             stderr=subprocess.STDOUT,
-#             universal_newlines=True,
-#             bufsize=1,
-#             encoding='utf-8',
-#             errors='ignore'
-#         )
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            bufsize=1,
+            encoding='utf-8',
+            errors='ignore'
+        )
         
-#         for line in process.stdout:
-#             line = line.strip()
-#             if '[download]' in line or '[info]' in line:
-#                 print(f'   {line}')
+        for line in process.stdout:
+            line = line.strip()
+            if '[download]' in line or '[info]' in line:
+                print(f'   {line}')
         
-#         process.wait()
+        process.wait()
         
-#         return process.returncode == 0
+        return process.returncode == 0
         
-#     except Exception as e:
-#         print(f"❌ Playlist download failed: {e}")
-#         return False
+    except Exception as e:
+        print(f"❌ Playlist download failed: {e}")
+        return False
 
 def main():
     """Main function"""
