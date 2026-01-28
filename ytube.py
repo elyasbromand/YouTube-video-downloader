@@ -7,6 +7,20 @@ import time
 import shutil
 from pathlib import Path
 
+def yt_dlp_base_cmd():
+    """
+    Base yt-dlp command with the exact flags that fixed your 403 issue in terminal.
+    """
+    return [
+        "yt-dlp",
+        "--newline",
+        "--progress",
+        '--extractor-args', 'youtube:player_client=android,web_embedded,tv',
+        "--js-runtimes", "deno",
+        "--remote-components", "ejs:github",
+    ]
+
+
 def clear_screen():
     """Clear terminal screen"""
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -156,151 +170,99 @@ def get_playlist_quality():
             print("❌ Invalid choice. Please select 1-4.")
 
 def get_playlist_info(url):
-    """Get playlist information - IMPROVED"""
+    """Get playlist information reliably using the same hardened yt-dlp flags."""
     print("\n⏳ Fetching playlist information...")
-    
+
     try:
-        # Try multiple methods to get playlist info
-        methods = [
-            # Method 1: Flat playlist
-            ['yt-dlp', '--flat-playlist', '--dump-single-json', '--no-warnings', url],
-            # Method 2: Simpler approach
-            ['yt-dlp', '--flat-playlist', '--print', '%(playlist)s - %(playlist_index)s - %(title)s', '--no-warnings', url],
-            # Method 3: Just count
-            ['yt-dlp', '--flat-playlist', '--print', '%(playlist_index)s', '--no-warnings', url]
+        cmd = yt_dlp_base_cmd() + [
+            "--flat-playlist",
+            "--dump-single-json",
+            "--no-warnings",
+            url,
         ]
-        
-        playlist_info = None
-        
-        for method_num, cmd in enumerate(methods, 1):
-            try:
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                    encoding='utf-8',
-                    errors='ignore'
-                )
-                
-                if result.returncode == 0 and result.stdout.strip():
-                    if method_num == 1:  # JSON method
-                        try:
-                            data = json.loads(result.stdout)
-                            if 'entries' in data:
-                                video_count = len(data['entries'])
-                                playlist_title = data.get('title', 'Unknown Playlist')
-                                print(f"✅ Found playlist: {playlist_title} ({video_count} videos)")
-                                return {
-                                    'title': playlist_title,
-                                    'video_count': video_count,
-                                    'method': 'json'
-                                }
-                        except json.JSONDecodeError:
-                            continue
-                    
-                    elif method_num == 2 or method_num == 3:  # Text methods
-                        lines = [line for line in result.stdout.strip().split('\n') if line.strip()]
-                        if lines:
-                            if method_num == 2:
-                                # Parse first line for title
-                                first_line = lines[0]
-                                if ' - ' in first_line:
-                                    parts = first_line.split(' - ', 2)
-                                    if len(parts) >= 3:
-                                        playlist_title = parts[0]
-                                    else:
-                                        playlist_title = 'Unknown Playlist'
-                                else:
-                                    playlist_title = 'Unknown Playlist'
-                            else:
-                                playlist_title = 'Unknown Playlist'
-                            
-                            video_count = len(lines)
-                            print(f"✅ Found playlist with {video_count} videos")
-                            return {
-                                'title': playlist_title,
-                                'video_count': video_count,
-                                'method': 'text'
-                            }
-                
-            except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
-                continue
-        
-        # If all methods fail, try one more simple approach
-        print("⚠️  Using simplified playlist detection...")
-        return {
-            'title': 'YouTube Playlist',
-            'video_count': 'unknown',
-            'method': 'simplified'
-        }
-        
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            encoding="utf-8",
+            errors="ignore",
+        )
+
+        if result.returncode == 0 and result.stdout.strip():
+            data = json.loads(result.stdout)
+            entries = data.get("entries") or []
+            title = data.get("title") or data.get("playlist_title") or "Unknown Playlist"
+            print(f"✅ Found playlist: {title} ({len(entries)} videos)")
+            return {"title": title, "video_count": len(entries), "method": "json"}
+
+        print("⚠️  Could not fetch detailed playlist info (continuing anyway).")
+        return {"title": "YouTube Playlist", "video_count": "unknown", "method": "fallback"}
+
     except Exception as e:
-        print(f"⚠️  Could not get detailed playlist info: {str(e)[:100]}")
-        return {
-            'title': 'YouTube Playlist',
-            'video_count': 'unknown',
-            'method': 'error'
-        }
+        print(f"⚠️  Could not get detailed playlist info: {str(e)[:120]}")
+        return {"title": "YouTube Playlist", "video_count": "unknown", "method": "error"}
+
 
 def download_playlist(url, download_path, playlist_options, quality):
-    """Download playlist using yt-dlp - reliable progress + proper quality"""
+    """Download playlist using yt-dlp (uses ONLY yt-dlp) with 403-resistant flags."""
     print(f"\n🎵 Starting playlist download...")
     print(f"   Destination: {download_path}")
     print("-" * 70)
 
-    # Build output template safely for Windows/Linux/macOS
     output_template = os.path.join(
         download_path,
         "%(playlist_title)s",
         "%(playlist_index)03d - %(title)s.%(ext)s"
     )
 
-    cmd = ["yt-dlp"]
+    # Make playlist quality resistant to m3u8 fragments (same idea as your working terminal command)
+    hardened_quality = (
+        f"{quality}[ext=mp4][protocol!=m3u8][protocol!=m3u8_native]/"
+        f"{quality}[protocol!=m3u8][protocol!=m3u8_native]/"
+        "best[ext=mp4][protocol!=m3u8][protocol!=m3u8_native]/"
+        "best[protocol!=m3u8][protocol!=m3u8_native]/best"
+    )
 
-    # Output + format
+    cmd = yt_dlp_base_cmd()
+
+    cmd += ["--yes-playlist"]
     cmd += ["-o", output_template]
-    cmd += ["-f", quality]  # ✅ use the passed quality
+    cmd += ["-f", hardened_quality]
 
     # Playlist selection options
-    if playlist_options["mode"] == 2:        # range
+    if playlist_options["mode"] == 2:
         cmd += ["--playlist-items", playlist_options["range"]]
-    elif playlist_options["mode"] == 3:      # specific numbers
+    elif playlist_options["mode"] == 3:
         cmd += ["--playlist-items", playlist_options["numbers"]]
-    elif playlist_options["mode"] == 4:      # skip already downloaded
+    elif playlist_options["mode"] == 4:
         archive_file = os.path.join(download_path, "downloaded.txt")
         cmd += ["--download-archive", archive_file]
 
-    # Force playlist behavior (fine to keep)
-    cmd += ["--yes-playlist"]
-
-    # Reasonable reliability flags (don’t throttle too hard)
+    # Reliability
     cmd += [
-        "--retries", "5",
-        "--fragment-retries", "5",
+        "--retries", "10",
+        "--fragment-retries", "10",
         "--skip-unavailable-fragments",
         "--ignore-errors",
         "--continue",
-        "--newline",
-        "--progress",
     ]
 
-    # URL last
     cmd.append(url)
 
     print("\nRunning:", " ".join(cmd))
     print("-" * 70)
 
-    # ✅ CRITICAL FIX: do NOT pipe stdout/stderr. Let yt-dlp print to terminal.
     result = subprocess.run(cmd)
 
     if result.returncode in (0, 1):
-        # 1 often means “some items failed” but others downloaded.
         print("\n✅ Playlist download finished (code:", result.returncode, ")")
         return True, "Success/Partial"
     else:
         print("\n❌ Playlist download failed (code:", result.returncode, ")")
         return False, f"Exit code {result.returncode}"
+
 
 def download_playlist_alternative(url, download_path, playlist_options):
     """Alternative playlist download method"""
@@ -398,50 +360,36 @@ def get_download_path():
                 continue
 
 def get_video_info(url):
-    """Get video information using yt-dlp"""
+    """Get video information using yt-dlp (hardened flags)."""
     print("\n⏳ Fetching video information...")
-    
+
     try:
-        # Command to get video info in JSON format
-        cmd = [
-            'yt-dlp',
-            '--skip-download',
-            '--dump-json',
-            '--no-warnings',
-            '--no-check-certificate',
-            '--force-ipv4',
-            url
+        cmd = yt_dlp_base_cmd() + [
+            "--skip-download",
+            "--dump-json",
+            "--no-warnings",
+            url,
         ]
-        
+
         result = subprocess.run(
-            cmd, 
-            capture_output=True, 
-            text=True, 
+            cmd,
+            capture_output=True,
+            text=True,
             timeout=30,
-            encoding='utf-8',
-            errors='ignore'
+            encoding="utf-8",
+            errors="ignore",
         )
-        
-        if result.returncode != 0:
-            print(f"⚠️  Warning: Could not fetch full video info")
-            print(f"   Error: {result.stderr[:200]}")
+
+        if result.returncode != 0 or not result.stdout.strip():
+            print("⚠️  Warning: Could not fetch full video info (download may still work).")
             return {"title": "Unknown", "uploader": "Unknown", "duration": 0, "view_count": 0}
-        
-        # Parse JSON output
-        try:
-            video_info = json.loads(result.stdout)
-            print("✅ Video information retrieved successfully!")
-            return video_info
-        except json.JSONDecodeError:
-            print("⚠️  Could not parse video information, but download may still work.")
-            return {"title": "Unknown", "uploader": "Unknown", "duration": 0, "view_count": 0}
-        
-    except subprocess.TimeoutExpired:
-        print("⚠️  Timeout while fetching video information.")
-        return {"title": "Unknown", "uploader": "Unknown", "duration": 0, "view_count": 0}
+
+        return json.loads(result.stdout)
+
     except Exception as e:
-        print(f"⚠️  Error fetching video info: {str(e)[:100]}")
+        print(f"⚠️  Error fetching video info: {str(e)[:120]}")
         return {"title": "Unknown", "uploader": "Unknown", "duration": 0, "view_count": 0}
+
 
 def format_duration(seconds):
     """Format duration in seconds to HH:MM:SS"""
@@ -518,37 +466,48 @@ def get_download_strategy():
 
 def download_video(url, download_path, format_choice, strategy_choice, format_num):
     """
-    Download video using yt-dlp with robust error handling (no ffmpeg required for formats 1-5).
-    Fixes:
-      - Avoids "looks stuck" progress issues by NOT piping stdout unless needed.
-      - Avoids many YouTube 403/HLS fragment cases by preferring non-m3u8 protocols.
-      - Uses a safer YouTube client (android) via extractor args.
+    yt-dlp downloader hardened against YouTube SABR/HLS 403 issues.
+
+    Key fixes:
+      - Use safer YouTube player clients: android/web_embedded/tv
+      - Enable EJS remote component + JS runtime (deno recommended)
+      - Prefer non-m3u8 protocols to avoid fragment 403s when possible
+      - Optional cookies-from-browser for gated/age/region/account cases
     """
-    print(f"\n⬇️  Starting download (No FFmpeg required)...")
+    print(f"\n⬇️  Starting download (No FFmpeg required for formats 1-5)...")
     print(f"   Destination: {download_path}")
     print("-" * 70)
 
     try:
         cmd = ["yt-dlp"]
 
-        # Output template (safe join for Windows paths)
+        # Output template
         output_template = os.path.join(download_path, "%(title)s.%(ext)s")
         cmd += ["-o", output_template]
 
-        # ---- FORMAT SELECTION (no-ffmpeg focus) ----
+        # ---- IMPORTANT: YouTube extraction hardening ----
+        # Try multiple player clients. This is a common workaround when some clients only give SABR/missing URLs.
+        cmd += ["--extractor-args", "youtube:player_client=android,web_embedded,tv"]  # workaround pattern :contentReference[oaicite:3]{index=3}
+
+        # EJS / JS runtime support (recommended now; without it formats may be missing) :contentReference[oaicite:4]{index=4}
+        # If you have deno installed: deno --version should work.
+        cmd += ["--js-runtimes", "deno"]
+        # Auto-fetch solver lib (helps with new JS challenges)
+        cmd += ["--remote-components", "ejs:github"]  # shown in practice to pull solver library :contentReference[oaicite:5]{index=5}
+
+        # OPTIONAL: if you still get 403 on some videos, uncomment cookies-from-browser:
+        # cmd += ["--cookies-from-browser", "chrome"]
+
+        # ---- FORMAT SELECTION ----
         if format_num <= 5:
-            # If you pass something like: best[height<=720][ext=mp4]
-            # We harden it against HLS/m3u8 to reduce 403 fragment failures.
+            # Harden your chosen progressive format against HLS/m3u8 fragments.
+            # If format_choice is like best[height<=720][ext=mp4], we prefer non-m3u8 first.
             hardened = (
                 f"{format_choice}[protocol!=m3u8][protocol!=m3u8_native]/"
-                f"{format_choice}/"
                 "best[ext=mp4][protocol!=m3u8][protocol!=m3u8_native]/"
                 "best[protocol!=m3u8][protocol!=m3u8_native]/best"
             )
             cmd += ["-f", hardened]
-
-            # Sorting can help choose direct/progressive-ish options first
-            cmd += ["--format-sort", "res,ext,proto,codec,br,size"]
             cmd += ["--no-keep-video"]
 
         elif format_num in (6, 7):
@@ -559,11 +518,8 @@ def download_video(url, download_path, format_choice, strategy_choice, format_nu
         elif format_num == 8:
             cmd += ["--write-subs", "--skip-download"]
 
-        # ---- YouTube extractor hardening (helps missing/broken URL cases) ----
-        cmd += ["--extractor-args", "youtube:player_client=android"]
-
-        # ---- Strategy-specific options ----
-        if strategy_choice == 1:  # Standard
+        # ---- Strategy options (keep yours, but don’t throttle too hard) ----
+        if strategy_choice == 1:
             cmd += [
                 "--retries", "10",
                 "--fragment-retries", "10",
@@ -578,7 +534,7 @@ def download_video(url, download_path, format_choice, strategy_choice, format_nu
                 "--referer", "https://www.youtube.com/",
                 "--add-header", "Accept-Language:en-US,en;q=0.9",
             ]
-        else:  # Aggressive
+        else:
             cmd += [
                 "--retries", "20",
                 "--fragment-retries", "20",
@@ -598,18 +554,13 @@ def download_video(url, download_path, format_choice, strategy_choice, format_nu
                 "--max-sleep-interval", "5",
             ]
 
-        # Progress options (let yt-dlp render it)
         cmd += ["--newline", "--progress"]
-
-        # URL last
         cmd.append(url)
 
-        print("\nStarting download...")
-        print("-" * 70)
-        print("Running:", " ".join(cmd))
+        print("\nRunning:", " ".join(cmd))
         print("-" * 70)
 
-        # ✅ CRITICAL FIX: do NOT capture output; let yt-dlp print progress properly
+        # Let yt-dlp render progress correctly
         result = subprocess.run(cmd)
 
         if result.returncode == 0:
@@ -617,69 +568,68 @@ def download_video(url, download_path, format_choice, strategy_choice, format_nu
             print("✅ Download completed successfully!")
             return True, "Success"
         elif result.returncode == 1:
-            # yt-dlp sometimes returns 1 when some parts failed but others succeeded
             print("-" * 70)
-            print("⚠️  Download partially completed (some parts may have failed).")
+            print("⚠️  Download partially completed (some items may have failed).")
             return True, "Partial success"
         else:
             return False, f"Download failed with exit code: {result.returncode}"
 
     except FileNotFoundError:
-        error_msg = "yt-dlp not found. Please make sure it's installed and in PATH."
-        print(f"❌ {error_msg}")
-        return False, error_msg
+        msg = "yt-dlp not found. Please install it and ensure it's in PATH."
+        print("❌", msg)
+        return False, msg
     except Exception as e:
-        error_msg = f"Download error: {str(e)}"
-        print(f"❌ {error_msg}")
-        return False, error_msg
+        msg = f"Download error: {e}"
+        print("❌", msg)
+        return False, msg
 
 
-def download_playlist_without_ffmpeg(url, download_path):
-    """Special function for downloading playlists without FFmpeg"""
-    print("\n🎵 Downloading playlist (progressive streams only)...")
+# def download_playlist_without_ffmpeg(url, download_path):
+#     """Special function for downloading playlists without FFmpeg"""
+#     print("\n🎵 Downloading playlist (progressive streams only)...")
     
-    try:
-        cmd = [
-            'yt-dlp',
-            '-o', f'{download_path}/%(playlist)s/%(playlist_index)s - %(title)s.%(ext)s',
-            '-f', 'best[height<=720][ext=mp4]/best[ext=mp4]/best',
-            '--retries', '10',
-            '--fragment-retries', '10',
-            '--skip-unavailable-fragments',
-            '--no-playlist-reverse',
-            '--no-playlist-random',
-            '--download-archive', os.path.join(download_path, 'downloaded.txt'),
-            '--newline',
-            '--progress',
-            '--console-title',
-            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            '--force-ipv4',
-            '--no-check-certificate',
-            url
-        ]
+#     try:
+#         cmd = [
+#             'yt-dlp',
+#             '-o', f'{download_path}/%(playlist)s/%(playlist_index)s - %(title)s.%(ext)s',
+#             '-f', 'best[height<=720][ext=mp4]/best[ext=mp4]/best',
+#             '--retries', '10',
+#             '--fragment-retries', '10',
+#             '--skip-unavailable-fragments',
+#             '--no-playlist-reverse',
+#             '--no-playlist-random',
+#             '--download-archive', os.path.join(download_path, 'downloaded.txt'),
+#             '--newline',
+#             '--progress',
+#             '--console-title',
+#             '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+#             '--force-ipv4',
+#             '--no-check-certificate',
+#             url
+#         ]
         
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            universal_newlines=True,
-            bufsize=1,
-            encoding='utf-8',
-            errors='ignore'
-        )
+#         process = subprocess.Popen(
+#             cmd,
+#             stdout=subprocess.PIPE,
+#             stderr=subprocess.STDOUT,
+#             universal_newlines=True,
+#             bufsize=1,
+#             encoding='utf-8',
+#             errors='ignore'
+#         )
         
-        for line in process.stdout:
-            line = line.strip()
-            if '[download]' in line or '[info]' in line:
-                print(f'   {line}')
+#         for line in process.stdout:
+#             line = line.strip()
+#             if '[download]' in line or '[info]' in line:
+#                 print(f'   {line}')
         
-        process.wait()
+#         process.wait()
         
-        return process.returncode == 0
+#         return process.returncode == 0
         
-    except Exception as e:
-        print(f"❌ Playlist download failed: {e}")
-        return False
+#     except Exception as e:
+#         print(f"❌ Playlist download failed: {e}")
+#         return False
 
 def main():
     """Main function"""
