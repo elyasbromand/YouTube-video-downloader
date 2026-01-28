@@ -44,10 +44,14 @@ python -m pip install -U yt-dlp
 
 ## Install Deno
 
+Wignet:
 ```windows (wignet)
 winget install DenoLand.Deno
 ```
-
+Powershell: 
+```windows (Powershell)
+irm https://deno.land/install.ps1 | iex
+```
 ---
 
 ## Verify
