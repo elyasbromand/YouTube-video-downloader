@@ -82,6 +82,271 @@ def get_valid_url():
             print("   - https://www.youtube.com/playlist?list=PLAYLIST_ID")
             continue
 
+
+#playlist check
+def is_playlist_url(url):
+    """Check if URL is a playlist with better detection"""
+    playlist_patterns = [
+        r'list=',
+        r'/playlist',
+        r'/watch.*list=',
+        r'youtube.com/c/.*/playlists',
+        r'youtube.com/user/.*/playlists'
+    ]
+    
+    return any(re.search(pattern, url, re.IGNORECASE) for pattern in playlist_patterns)
+
+def get_playlist_options():
+    """Get playlist download options from user"""
+    print("\n🎵 Playlist Download Options:")
+    print("   1. Download all videos")
+    print("   2. Download specific range (e.g., 1-10)")
+    print("   3. Download specific video numbers (e.g., 1,3,5)")
+    print("   4. Skip already downloaded videos")
+    
+    while True:
+        choice = input("\nSelect option (1-4): ").strip()
+        
+        if choice in ['1', '2', '3', '4']:
+            options = {'mode': int(choice)}
+            
+            if choice == '2':
+                while True:
+                    range_input = input("Enter range (e.g., 1-10): ").strip()
+                    if re.match(r'^\d+-\d+$', range_input):
+                        options['range'] = range_input
+                        break
+                    else:
+                        print("❌ Invalid range format. Use format like '1-10'")
+            
+            elif choice == '3':
+                while True:
+                    numbers_input = input("Enter video numbers (e.g., 1,3,5): ").strip()
+                    if re.match(r'^\d+(,\d+)*$', numbers_input):
+                        options['numbers'] = numbers_input
+                        break
+                    else:
+                        print("❌ Invalid format. Use format like '1,3,5'")
+            
+            return options
+        else:
+            print("❌ Invalid choice. Please select 1-4.")
+
+def get_playlist_quality():
+    """Get quality options for playlist downloads"""
+    print("\n📊 Playlist Quality Options:")
+    print("   1. Best progressive quality (recommended)")
+    print("   2. 720p HD progressive")
+    print("   3. 480p progressive")
+    print("   4. 360p progressive")
+    
+    while True:
+        choice = input("\nSelect quality (1-4): ").strip()
+        
+        quality_map = {
+            '1': 'best[ext=mp4]/best',
+            '2': 'best[height<=720][ext=mp4]/best[height<=720]',
+            '3': 'best[height<=480][ext=mp4]/best[height<=480]',
+            '4': 'best[height<=360][ext=mp4]/best[height<=360]'
+        }
+        
+        if choice in quality_map:
+            return quality_map[choice]
+        else:
+            print("❌ Invalid choice. Please select 1-4.")
+
+def get_playlist_info(url):
+    """Get playlist information - IMPROVED"""
+    print("\n⏳ Fetching playlist information...")
+    
+    try:
+        # Try multiple methods to get playlist info
+        methods = [
+            # Method 1: Flat playlist
+            ['yt-dlp', '--flat-playlist', '--dump-single-json', '--no-warnings', url],
+            # Method 2: Simpler approach
+            ['yt-dlp', '--flat-playlist', '--print', '%(playlist)s - %(playlist_index)s - %(title)s', '--no-warnings', url],
+            # Method 3: Just count
+            ['yt-dlp', '--flat-playlist', '--print', '%(playlist_index)s', '--no-warnings', url]
+        ]
+        
+        playlist_info = None
+        
+        for method_num, cmd in enumerate(methods, 1):
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    encoding='utf-8',
+                    errors='ignore'
+                )
+                
+                if result.returncode == 0 and result.stdout.strip():
+                    if method_num == 1:  # JSON method
+                        try:
+                            data = json.loads(result.stdout)
+                            if 'entries' in data:
+                                video_count = len(data['entries'])
+                                playlist_title = data.get('title', 'Unknown Playlist')
+                                print(f"✅ Found playlist: {playlist_title} ({video_count} videos)")
+                                return {
+                                    'title': playlist_title,
+                                    'video_count': video_count,
+                                    'method': 'json'
+                                }
+                        except json.JSONDecodeError:
+                            continue
+                    
+                    elif method_num == 2 or method_num == 3:  # Text methods
+                        lines = [line for line in result.stdout.strip().split('\n') if line.strip()]
+                        if lines:
+                            if method_num == 2:
+                                # Parse first line for title
+                                first_line = lines[0]
+                                if ' - ' in first_line:
+                                    parts = first_line.split(' - ', 2)
+                                    if len(parts) >= 3:
+                                        playlist_title = parts[0]
+                                    else:
+                                        playlist_title = 'Unknown Playlist'
+                                else:
+                                    playlist_title = 'Unknown Playlist'
+                            else:
+                                playlist_title = 'Unknown Playlist'
+                            
+                            video_count = len(lines)
+                            print(f"✅ Found playlist with {video_count} videos")
+                            return {
+                                'title': playlist_title,
+                                'video_count': video_count,
+                                'method': 'text'
+                            }
+                
+            except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
+                continue
+        
+        # If all methods fail, try one more simple approach
+        print("⚠️  Using simplified playlist detection...")
+        return {
+            'title': 'YouTube Playlist',
+            'video_count': 'unknown',
+            'method': 'simplified'
+        }
+        
+    except Exception as e:
+        print(f"⚠️  Could not get detailed playlist info: {str(e)[:100]}")
+        return {
+            'title': 'YouTube Playlist',
+            'video_count': 'unknown',
+            'method': 'error'
+        }
+
+def download_playlist(url, download_path, playlist_options, quality):
+    """Download playlist using yt-dlp - reliable progress + proper quality"""
+    print(f"\n🎵 Starting playlist download...")
+    print(f"   Destination: {download_path}")
+    print("-" * 70)
+
+    # Build output template safely for Windows/Linux/macOS
+    output_template = os.path.join(
+        download_path,
+        "%(playlist_title)s",
+        "%(playlist_index)03d - %(title)s.%(ext)s"
+    )
+
+    cmd = ["yt-dlp"]
+
+    # Output + format
+    cmd += ["-o", output_template]
+    cmd += ["-f", quality]  # ✅ use the passed quality
+
+    # Playlist selection options
+    if playlist_options["mode"] == 2:        # range
+        cmd += ["--playlist-items", playlist_options["range"]]
+    elif playlist_options["mode"] == 3:      # specific numbers
+        cmd += ["--playlist-items", playlist_options["numbers"]]
+    elif playlist_options["mode"] == 4:      # skip already downloaded
+        archive_file = os.path.join(download_path, "downloaded.txt")
+        cmd += ["--download-archive", archive_file]
+
+    # Force playlist behavior (fine to keep)
+    cmd += ["--yes-playlist"]
+
+    # Reasonable reliability flags (don’t throttle too hard)
+    cmd += [
+        "--retries", "5",
+        "--fragment-retries", "5",
+        "--skip-unavailable-fragments",
+        "--ignore-errors",
+        "--continue",
+        "--newline",
+        "--progress",
+    ]
+
+    # URL last
+    cmd.append(url)
+
+    print("\nRunning:", " ".join(cmd))
+    print("-" * 70)
+
+    # ✅ CRITICAL FIX: do NOT pipe stdout/stderr. Let yt-dlp print to terminal.
+    result = subprocess.run(cmd)
+
+    if result.returncode in (0, 1):
+        # 1 often means “some items failed” but others downloaded.
+        print("\n✅ Playlist download finished (code:", result.returncode, ")")
+        return True, "Success/Partial"
+    else:
+        print("\n❌ Playlist download failed (code:", result.returncode, ")")
+        return False, f"Exit code {result.returncode}"
+
+def download_playlist_alternative(url, download_path, playlist_options):
+    """Alternative playlist download method"""
+    try:
+        # Even simpler command
+        cmd = [
+            'yt-dlp',
+            '-o', f'{download_path}/%(playlist)s/%(title)s.%(ext)s',
+            '--yes-playlist',
+            '--ignore-errors',
+            '--retries', '3',
+            '--no-check-certificate',
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            '--newline',
+            '--progress',
+            url
+        ]
+        
+        # Add playlist items if specified
+        if playlist_options['mode'] == 2:  # Range
+            cmd.insert(2, '--playlist-items')
+            cmd.insert(3, playlist_options['range'])
+        elif playlist_options['mode'] == 3:  # Specific numbers
+            cmd.insert(2, '--playlist-items')
+            cmd.insert(3, playlist_options['numbers'])
+        
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            bufsize=1
+        )
+        
+        for line in process.stdout:
+            if line.strip():
+                print(f'   {line.strip()}')
+        
+        process.wait()
+        
+        return process.returncode in [0, 1]  # Accept 0 or 1 as success
+        
+    except Exception as e:
+        print(f"❌ Alternative method failed: {e}")
+        return False       
+
 def get_download_path():
     """Get download path from user"""
     print("\n📁 Download Location:")
@@ -252,147 +517,122 @@ def get_download_strategy():
             print("❌ Invalid choice. Please select 1-2.")
 
 def download_video(url, download_path, format_choice, strategy_choice, format_num):
-    """Download video using yt-dlp with robust error handling - NO FFMPEG REQUIRED"""
+    """
+    Download video using yt-dlp with robust error handling (no ffmpeg required for formats 1-5).
+    Fixes:
+      - Avoids "looks stuck" progress issues by NOT piping stdout unless needed.
+      - Avoids many YouTube 403/HLS fragment cases by preferring non-m3u8 protocols.
+      - Uses a safer YouTube client (android) via extractor args.
+    """
     print(f"\n⬇️  Starting download (No FFmpeg required)...")
     print(f"   Destination: {download_path}")
     print("-" * 70)
-    
+
     try:
-        # Base command
-        cmd = ['yt-dlp']
-        
-        # Output template - cleaner
-        output_template = f'{download_path}/%(title)s.%(ext)s'
-        cmd.extend(['-o', output_template])
-        
-        # For progressive formats (1-5), use simpler approach
-        if format_num <= 5:  # Progressive video formats
-            # Force progressive streams (already merged)
-            cmd.extend(['-f', format_choice])
-            # Add format preference to ensure progressive
-            cmd.extend(['--format-sort', 'proto,res,codec,size,br'])
-            cmd.extend(['--prefer-free-formats'])
-            
-            # Clean up temp files
-            cmd.extend(['--no-keep-video'])
-            
-        elif format_num == 6:  # MP3 conversion (requires FFmpeg warning)
-            print("⚠️  MP3 conversion requires FFmpeg. Install FFmpeg for this feature.")
-            print("   Using M4A instead (no FFmpeg needed)...")
-            cmd.extend(['-f', 'bestaudio[ext=m4a]/bestaudio'])
-            
-        elif format_num == 7:  # Audio only (requires FFmpeg warning)
-            print("⚠️  Audio extraction requires FFmpeg. Install FFmpeg for this feature.")
-            print("   Using M4A instead (no FFmpeg needed)...")
-            cmd.extend(['-f', 'bestaudio[ext=m4a]/bestaudio'])
-            
-        elif format_num == 8:  # Subtitles only
-            cmd.extend(['--write-subs', '--skip-download'])
-        
-        # Add strategy-specific options
+        cmd = ["yt-dlp"]
+
+        # Output template (safe join for Windows paths)
+        output_template = os.path.join(download_path, "%(title)s.%(ext)s")
+        cmd += ["-o", output_template]
+
+        # ---- FORMAT SELECTION (no-ffmpeg focus) ----
+        if format_num <= 5:
+            # If you pass something like: best[height<=720][ext=mp4]
+            # We harden it against HLS/m3u8 to reduce 403 fragment failures.
+            hardened = (
+                f"{format_choice}[protocol!=m3u8][protocol!=m3u8_native]/"
+                f"{format_choice}/"
+                "best[ext=mp4][protocol!=m3u8][protocol!=m3u8_native]/"
+                "best[protocol!=m3u8][protocol!=m3u8_native]/best"
+            )
+            cmd += ["-f", hardened]
+
+            # Sorting can help choose direct/progressive-ish options first
+            cmd += ["--format-sort", "res,ext,proto,codec,br,size"]
+            cmd += ["--no-keep-video"]
+
+        elif format_num in (6, 7):
+            print("⚠️  MP3/audio extraction needs FFmpeg for conversion.")
+            print("   Downloading M4A audio instead (no FFmpeg needed)...")
+            cmd += ["-f", "bestaudio[ext=m4a]/bestaudio"]
+
+        elif format_num == 8:
+            cmd += ["--write-subs", "--skip-download"]
+
+        # ---- YouTube extractor hardening (helps missing/broken URL cases) ----
+        cmd += ["--extractor-args", "youtube:player_client=android"]
+
+        # ---- Strategy-specific options ----
         if strategy_choice == 1:  # Standard
-            cmd.extend([
-                '--retries', '10',
-                '--fragment-retries', '10',
-                '--skip-unavailable-fragments',
-                '--throttled-rate', '100K',
-                '--socket-timeout', '30',
-                '--source-address', '0.0.0.0',
-                '--force-ipv4',
-                '--no-check-certificate',
-                '--geo-bypass',
-                '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                '--referer', 'https://www.youtube.com/',
-                '--add-header', 'Accept-Language:en-US,en;q=0.9',
-            ])
-        elif strategy_choice == 2:  # Aggressive
-            cmd.extend([
-                '--retries', '20',
-                '--fragment-retries', '20',
-                '--skip-unavailable-fragments',
-                '--throttled-rate', '50K',
-                '--socket-timeout', '60',
-                '--source-address', '0.0.0.0',
-                '--force-ipv4',
-                '--no-check-certificate',
-                '--geo-bypass',
-                '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                '--referer', 'https://www.youtube.com/',
-                '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                '--add-header', 'Accept-Language:en-US,en;q=0.5',
-                '--add-header', 'Connection:keep-alive',
-                '--sleep-interval', '2',
-                '--max-sleep-interval', '5'
-            ])
-        
-        # Add progress and newline for better display
-        cmd.extend(['--newline', '--progress'])
-        
-        # Add URL
+            cmd += [
+                "--retries", "10",
+                "--fragment-retries", "10",
+                "--skip-unavailable-fragments",
+                "--socket-timeout", "30",
+                "--force-ipv4",
+                "--no-check-certificate",
+                "--geo-bypass",
+                "--user-agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "--referer", "https://www.youtube.com/",
+                "--add-header", "Accept-Language:en-US,en;q=0.9",
+            ]
+        else:  # Aggressive
+            cmd += [
+                "--retries", "20",
+                "--fragment-retries", "20",
+                "--skip-unavailable-fragments",
+                "--socket-timeout", "60",
+                "--force-ipv4",
+                "--no-check-certificate",
+                "--geo-bypass",
+                "--user-agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "--referer", "https://www.youtube.com/",
+                "--add-header", "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "--add-header", "Accept-Language:en-US,en;q=0.5",
+                "--add-header", "Connection:keep-alive",
+                "--sleep-interval", "2",
+                "--max-sleep-interval", "5",
+            ]
+
+        # Progress options (let yt-dlp render it)
+        cmd += ["--newline", "--progress"]
+
+        # URL last
         cmd.append(url)
-        
-        print(f"\nStarting download...")
+
+        print("\nStarting download...")
         print("-" * 70)
-        
-        # Run download process
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            universal_newlines=True,
-            bufsize=1,
-            encoding='utf-8',
-            errors='ignore'
-        )
-        
-        # Display progress
-        download_started = False
-        last_percentage = 0
-        
-        for line in process.stdout:
-            line = line.strip()
-            
-            # Show download progress
-            if '[download]' in line and '%' in line:
-                download_started = True
-                # Extract percentage
-                match = re.search(r'(\d+\.?\d*)%', line)
-                if match:
-                    percentage = float(match.group(1))
-                    if percentage > last_percentage:
-                        # Simple progress bar
-                        bar_length = 40
-                        filled = int(bar_length * percentage / 100)
-                        bar = '█' * filled + '░' * (bar_length - filled)
-                        print(f'\r   Progress: [{bar}] {percentage:.1f}%', end='', flush=True)
-                        last_percentage = percentage
-            elif 'ERROR' in line or 'WARNING' in line:
-                print(f'\n   ⚠️ {line}')
-            elif line and not line.startswith('[debug]'):
-                if download_started:
-                    print(f'\n   {line}')
-                else:
-                    print(f'   {line}')
-        
-        process.wait()
-        print()  # New line after progress bar
-        
-        if process.returncode == 0:
+        print("Running:", " ".join(cmd))
+        print("-" * 70)
+
+        # ✅ CRITICAL FIX: do NOT capture output; let yt-dlp print progress properly
+        result = subprocess.run(cmd)
+
+        if result.returncode == 0:
             print("-" * 70)
             print("✅ Download completed successfully!")
             return True, "Success"
+        elif result.returncode == 1:
+            # yt-dlp sometimes returns 1 when some parts failed but others succeeded
+            print("-" * 70)
+            print("⚠️  Download partially completed (some parts may have failed).")
+            return True, "Partial success"
         else:
-            error_msg = f"Download failed with exit code: {process.returncode}"
-            return False, error_msg
-            
+            return False, f"Download failed with exit code: {result.returncode}"
+
     except FileNotFoundError:
-        error_msg = "yt-dlp not found. Please make sure it's installed."
+        error_msg = "yt-dlp not found. Please make sure it's installed and in PATH."
         print(f"❌ {error_msg}")
         return False, error_msg
     except Exception as e:
         error_msg = f"Download error: {str(e)}"
         print(f"❌ {error_msg}")
         return False, error_msg
+
 
 def download_playlist_without_ffmpeg(url, download_path):
     """Special function for downloading playlists without FFmpeg"""
@@ -456,42 +696,102 @@ def main():
         url = get_valid_url()
         
         # Check if it's a playlist
-        is_playlist = 'list=' in url or 'playlist' in url
+        is_playlist = is_playlist_url(url)
         
         # Get download path
         download_path = get_download_path()
         
-        # For playlists, use special function
+        # For playlists, use enhanced playlist downloader
         if is_playlist:
             print("\n🎵 Playlist detected!")
-            choice = input("Download entire playlist? (y/n): ").lower()
-            if choice == 'y':
-                success = download_playlist_without_ffmpeg(url, download_path)
-                if success:
-                    print("\n✅ Playlist download completed!")
-                else:
-                    print("\n❌ Playlist download failed.")
+            
+            # Get playlist info
+            playlist_info = get_playlist_info(url)
+            
+            if playlist_info:
+                video_count = playlist_info.get('video_count', 'unknown')
+                print(f"\n📊 Playlist contains {video_count} videos")
                 
-                # Open folder option
-                open_folder = input("\n📂 Open download folder? (y/n): ").lower()
-                if open_folder == 'y':
-                    if os.name == 'nt':  # Windows
-                        os.startfile(download_path)
-                    elif os.name == 'posix':  # macOS or Linux
-                        if sys.platform == 'darwin':  # macOS
-                            os.system(f'open "{download_path}"')
-                        else:  # Linux
-                            os.system(f'xdg-open "{download_path}"')
+                download_all = input("\nDownload this playlist? (y/n): ").lower()
                 
-                # Ask to download another
-                print("\n" + "=" * 70)
-                another = input("📥 Download another video/playlist? (y/n): ").lower()
-                if another == 'y':
-                    main()
-                else:
-                    print("\n👋 Thank you for using YouTube Downloader!")
+                if download_all == 'y':
+                    # Get playlist options
+                    playlist_options = get_playlist_options()
+                    
+                    # Get quality selection
+                    quality = get_playlist_quality()
+                    
+                    # Confirm download
+                    print("\n" + "=" * 70)
+                    print("PLAYLIST DOWNLOAD CONFIGURATION:")
+                    print(f"   Playlist: {playlist_info['title'][:60]}..." if len(playlist_info['title']) > 60 else f"   Playlist: {playlist_info['title']}")
+                    print(f"   Videos: {video_count}")
+                    print(f"   Mode: {'All videos' if playlist_options['mode'] == 1 else 'Range' if playlist_options['mode'] == 2 else 'Specific numbers' if playlist_options['mode'] == 3 else 'Skip downloaded'}")
+                    if playlist_options['mode'] == 2:
+                        print(f"   Range: {playlist_options.get('range', 'N/A')}")
+                    elif playlist_options['mode'] == 3:
+                        print(f"   Videos: {playlist_options.get('numbers', 'N/A')}")
+                    print(f"   Quality: {'Best' if quality == 'best[ext=mp4]/best' else '720p' if '720' in quality else '480p' if '480' in quality else '360p'}")
+                    print(f"   Save to: {download_path}")
                     print("=" * 70)
-                return
+                    
+                    confirm = input("\n✅ Start playlist download? (y/n): ").lower()
+                    if confirm != 'y':
+                        print("❌ Playlist download cancelled.")
+                        
+                        # Ask to download another
+                        print("\n" + "=" * 70)
+                        another = input("📥 Download another video/playlist? (y/n): ").lower()
+                        if another == 'y':
+                            main()
+                        else:
+                            print("\n👋 Thank you for using YouTube Downloader!")
+                            print("=" * 70)
+                        return
+                    
+                    # Start playlist download
+                    success, message = download_playlist(url, download_path, playlist_options, quality)
+                    
+                    if success:
+                        print("\n🎉 Playlist download completed!")
+                        print(f"📁 Playlist saved in: {download_path}")
+                        
+                        # Show what was downloaded
+                        try:
+                            # Look for downloaded files
+                            import glob
+                            mp4_files = glob.glob(os.path.join(download_path, "**", "*.mp4"), recursive=True)
+                            webm_files = glob.glob(os.path.join(download_path, "**", "*.webm"), recursive=True)
+                            m4a_files = glob.glob(os.path.join(download_path, "**", "*.m4a"), recursive=True)
+                            
+                            all_files = mp4_files + webm_files + m4a_files
+                            if all_files:
+                                print(f"\n📄 Downloaded {len(all_files)} file(s)")
+                                for file in all_files[:5]:  # Show first 5
+                                    filename = os.path.basename(file)
+                                    size = os.path.getsize(file) / (1024*1024)
+                                    print(f"   • {filename[:50]}... ({size:.1f} MB)" if len(filename) > 50 else f"   • {filename} ({size:.1f} MB)")
+                                if len(all_files) > 5:
+                                    print(f"   ... and {len(all_files) - 5} more")
+                        except:
+                            pass
+                    else:
+                        print(f"\n❌ Playlist download failed: {message}")
+                        print("   You can try:")
+                        print("   1. Check if the playlist is public")
+                        print("   2. Try downloading as single videos instead")
+                        print("   3. Use a different playlist URL")
+                
+                else:
+                    print("❌ Playlist download cancelled.")
+                    # Fall back to single video mode
+                    print("⚠️  Falling back to single video download...")
+                    # Remove playlist parameters from URL if present
+                    if '&list=' in url:
+                        url = url.split('&list=')[0]
+                    elif '?list=' in url:
+                        url = url.split('?list=')[0]
+                    is_playlist = False
         
         # For single videos
         # Get video info
